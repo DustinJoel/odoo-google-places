@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_partner_form_google_places" model="ir.ui.view">
+        <field name="name">res.partner.form.google.places</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form" />
+        <field name="arch" type="xml">
+            <!-- Add Google Places search field above address section -->
+            <xpath expr="//field[@name='street']" position="before">
+                <div class="o_row" invisible="not google_places_available">
+                    <field name="google_places_available" invisible="1"/>
+                    <field name="google_places_search" 
+                           widget="google_places_autocomplete"
+                           placeholder="🌍 Type to search for an address..."
+                           class="o_field_google_places_search"
+                           style="border-left: 3px solid #017e84; background-color: #f8f9fa; width: 100%;"
+                           options="{'types': ['geocode']}"/>
+                </div>
+            </xpath>
+            
+            <!-- Make address fields readonly when populated from Google Places -->
+            <xpath expr="//field[@name='street']" position="attributes">
+                <attribute name="readonly">is_google_populated and google_places_available</attribute>
+                <attribute name="help">Street address (automatically populated from Google Places if enabled)</attribute>
+            </xpath>
+            
+            <xpath expr="//field[@name='city']" position="attributes">
+                <attribute name="readonly">is_google_populated and google_places_available</attribute>
+                <attribute name="help">City (automatically populated from Google Places if enabled)</attribute>
+            </xpath>
+            
+            <xpath expr="//field[@name='zip']" position="attributes">
+                <attribute name="readonly">is_google_populated and google_places_available</attribute>
+                <attribute name="help">Postal code (automatically populated from Google Places if enabled)</attribute>
+            </xpath>
+            
+            <xpath expr="//field[@name='street']" position="before">
+                <field name="is_google_populated" invisible="1"/>
+            </xpath>
+            
+            <!-- Add Google Places metadata in collapsible group for technical users -->
+            <xpath expr="//field[@name='country_id']" position="after">
+                <group string="Google Places Metadata" 
+                       invisible="not is_google_populated or not google_places_available" 
+                       groups="base.group_no_one">
+                    <field name="google_places_place_id" readonly="1"/>
+                    <field name="address_formatted" readonly="1"/>
+                    <label for="latitude" string="GPS Coordinates"/>
+                    <div class="o_row">
+                        <field name="latitude" readonly="1"/>
+                        <span class="o_form_label mx-3">,</span>
+                        <field name="longitude" readonly="1"/>
+                    </div>
+                </group>
+            </xpath>
+        </field>
+    </record>
+</odoo>

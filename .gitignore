@@ -1,0 +1,34 @@
+# Python
+*.py[cod]
+__pycache__/
+*.so
+*.egg
+*.egg-info
+dist/
+build/
+.Python
+venv/
+env/
+
+# Odoo
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+
+# Distribution / packaging
+.Python
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+
+# Translations
+*.mo
+*.pot
