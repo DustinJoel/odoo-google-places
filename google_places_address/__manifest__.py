@@ -76,7 +76,7 @@
     'application': False,
     'auto_install': False,
     'license': 'LGPL-3',
-    'price': 25.00,
+    'price': 20.00,
     'currency': 'EUR',
     'support': 'sales@signalsnotnoise.co.za',
 }
