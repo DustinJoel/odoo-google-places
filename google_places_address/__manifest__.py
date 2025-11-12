@@ -45,8 +45,8 @@
         Perfect for businesses that handle many addresses daily and want to improve
         data quality while reducing manual data entry.
     ''',
-    'author': 'Signals Not Noise',
-    'website': 'https://www.signalsnotnoise.co.za/',
+    'author': 'Acceler8 Solutions',
+    'website': 'https://www.acclr8.solutions/',
     'depends': [
         'base', 
         'contacts',
