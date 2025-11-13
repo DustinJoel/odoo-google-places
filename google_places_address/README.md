@@ -122,7 +122,7 @@ LGPL-3 - See LICENSE file for details.
 
 ## Requirements
 
-- Odoo 17.0
+- Odoo 18.0
 - Python `requests` library
 - Valid Google Places API key
 - Active Google Cloud billing account

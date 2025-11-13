@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Google Places Address',
-    'version': '17.0.1.0.0',
+    'version': '18.0.1.0.0',
     'category': 'Contact Management',
     'summary': 'Intelligent address autocomplete using Google Places API',
     'description': '''
@@ -64,9 +64,11 @@
         'web.assets_backend': [
             'google_places_address/static/src/css/google_places.css',
             'google_places_address/static/src/js/google_places_field.js',
+            'google_places_address/static/src/xml/google_places_field.xml',
         ],
     },
     'images': [
+        'static/description/google_places_banner.gif'
         'static/description/icon.png',
         'static/description/screenshot_1.png',
         'static/description/screenshot_2.png',

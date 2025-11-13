@@ -73,7 +73,8 @@ class ResPartner(models.Model):
         for record in self:
             try:
                 current_company = self.env.company.id
-                record.google_places_available = self._is_google_places_enabled_for_company(current_company)
+                is_available = self._is_google_places_enabled_for_company(current_company)
+                record.google_places_available = is_available
             except Exception as e:
                 _logger.warning("Error computing Google Places availability: %s", str(e))
                 record.google_places_available = False
@@ -85,21 +86,23 @@ class ResPartner(models.Model):
         """
         try:
             ICP = self.env['ir.config_parameter'].sudo()
-            enabled_key = f'google.places.enabled.company_{company_id}'
-            api_key_key = f'google.places.api.key.company_{company_id}'
-            
-            enabled = ICP.get_param(enabled_key, 'False')
-            api_key = ICP.get_param(api_key_key, '')
-            
+            enabled = ICP.get_param('google_places_address.enabled', 'false')
+            api_key = ICP.get_param('google_places_address.api_key', '')
             return enabled.lower() == 'true' and bool(api_key.strip())
-            
         except Exception as e:
             _logger.error("Error checking Google Places configuration: %s", str(e))
             return False
 
+    def _validate_company_access(self):
+        """
+        Validate if the current company has access to Google Places API.
+        Returns True if enabled and configured, False otherwise.
+        """
+        return self._can_use_google_places()
+    
     def _can_use_google_places(self):
         """
-        Check if current user has permission to use Google Places functionality.
+        Check if current user has permision to use Google Places functionality.
         """
         if not self.env.user.has_group('base.group_user'):
             return False
@@ -110,9 +113,7 @@ class ResPartner(models.Model):
         """
         Retrieve the Google Places API key for the current company.
         """
-        company_id = self.env.company.id
-        api_key_key = f'google.places.api.key.company_{company_id}'
-        api_key = self.env['ir.config_parameter'].sudo().get_param(api_key_key, '')
+        api_key = self.env['ir.config_parameter'].sudo().get_param('google_places_address.api_key', '')
         return api_key.strip() if api_key else None
 
     def _make_google_api_request(self, url, params, max_retries=3):
@@ -136,7 +137,6 @@ class ResPartner(models.Model):
         
         for attempt in range(max_retries):
             try:
-                _logger.info("Google Places API request attempt %d: %s", attempt + 1, url)
                 
                 response = requests.get(url, params=params, timeout=10)
                 response.raise_for_status()
@@ -166,7 +166,6 @@ class ResPartner(models.Model):
                 
             # If we get here, we need to retry
             if attempt < max_retries - 1:  # Don't sleep on the last attempt
-                _logger.warning("Google Places API request failed, retrying in %s seconds: %s", current_delay, last_exception)
                 time.sleep(current_delay)
                 current_delay = min(current_delay * 2, max_delay)  # Exponential backoff
             
@@ -190,7 +189,6 @@ class ResPartner(models.Model):
         
         for attempt in range(max_retries):
             try:
-                _logger.info("Google Places API (New) request attempt %d: %s", attempt + 1, url)
                 
                 response = requests.post(url, json=request_body, headers=headers, timeout=10)
                 response.raise_for_status()
@@ -255,9 +253,7 @@ class ResPartner(models.Model):
             url = 'https://places.googleapis.com/v1/places:autocomplete'
             
             # Get country restriction from company settings
-            company_id = self.env.company.id
-            country_key = f'google.places.country.company_{company_id}'
-            country_restriction = self.env['ir.config_parameter'].sudo().get_param(country_key, '')
+            country_restriction = self.env['ir.config_parameter'].sudo().get_param('google_places_address.country_restriction', '')
             
             # Request body for POST request (new API format)
             request_body = {
@@ -355,10 +351,8 @@ class ResPartner(models.Model):
                 
             # Parse new API response format with enhanced debugging
             address_components_raw = data.get('addressComponents', [])
-            _logger.info("Raw address components from Google API: %s", address_components_raw)
             
             address_components = self._parse_address_components_new(address_components_raw)
-            _logger.info("Parsed address components: %s", address_components)
             
             # Update address fields with detailed field-by-field logging
             street_address = self._build_street_address(address_components)
@@ -383,9 +377,6 @@ class ResPartner(models.Model):
                 'zip': address_components.get('postal_code', ''),
             }
             
-            _logger.info("Address field assignments - Street: '%s', Street2: '%s', City: '%s', ZIP: '%s'", 
-                        street_address, street2, city, address_components.get('postal_code', ''))
-            
             # Handle location (coordinates) - new API format
             location = data.get('location', {})
             if location:
@@ -399,15 +390,11 @@ class ResPartner(models.Model):
             country_code = address_components.get('country_code')
             
             if state_name and country_code:
-                _logger.info("Looking for state: '%s' in country %s", state_name, country_code)
                 state_id = self._find_state_id(state_name, country_code.upper())
                 if state_id:
                     vals['state_id'] = state_id
-                    _logger.info("Successfully assigned state_id: %s for '%s'", state_id, state_name)
                 else:
                     _logger.warning("Failed to find state for '%s' in %s", state_name, country_code)
-            else:
-                _logger.info("No state/province or country found in address components")
                 
             # Handle country - try from address components
             country_code = address_components.get('country_code')
@@ -415,22 +402,18 @@ class ResPartner(models.Model):
             
             country = None
             if country_code:
-                _logger.info("Looking for country by code: '%s'", country_code)
                 country = self.env['res.country'].search([('code', '=', country_code.upper())], limit=1)
             elif country_name:
-                _logger.info("Looking for country by name: '%s'", country_name)
                 country = self.env['res.country'].search([('name', 'ilike', country_name)], limit=1)
             
             if country:
                 vals['country_id'] = country.id
-                _logger.info("Successfully assigned country_id: %s (%s)", country.id, country.name)
             else:
                 _logger.warning("Could not find country in address components")
                 
             # Update the record
             self.write(vals)
             
-            _logger.info("Successfully populated address for partner %s from Google Place %s", self.id, place_id)
             
             return {
                 'type': 'ir.actions.client',
@@ -522,7 +505,6 @@ class ResPartner(models.Model):
                 parsed['country_code'] = short_name
         
         # Log all components for debugging
-        _logger.info("All parsed components: %s", parsed)
         
         return parsed
 
@@ -554,7 +536,6 @@ class ResPartner(models.Model):
         ], limit=1)
         
         if state:
-            _logger.info("Found state by exact match: '%s' -> %s", state_name, state.name)
             return state.id
             
         # Try partial match
@@ -564,31 +545,64 @@ class ResPartner(models.Model):
         ], limit=1)
         
         if state:
-            _logger.info("Found state by partial match: '%s' -> %s", state_name, state.name)
             return state.id
             
-        _logger.warning("Could not find state '%s' in country '%s'. Available states for %s: %s", 
-                       state_name, country_code, country_code,
-                       [s.name for s in self.env['res.country.state'].search([('country_id.code', '=', country_code)])])
         return False
 
-    @api.model
-    def test_google_places_simple(self, *args):
+    def _find_or_create_city_id(self, city_name, state_id, country_id, zipcode=None):
         """
-        Simple test method to check if RPC calls work.
+        Find or create a res.city record for the given city name, state, and country.
+        Used when base_address_extended module is installed.
+        
+        Args:
+            city_name (str): Name of the city
+            state_id (int): ID of the state (res.country.state)
+            country_id (int): ID of the country (res.country)
+            zipcode (str, optional): ZIP/postal code
+            
+        Returns:
+            int or False: ID of the res.city record, or False if not found/created
         """
+        if not city_name or not country_id:
+            return False
+        
+        # Check if res.city model exists (base_address_extended installed)
+        if 'res.city' not in self.env:
+            return False
+        
         try:
-            return {
-                'success': True,
-                'company_id': self.env.company.id,
-                'message': 'Simple test successful'
+            # Search for existing city
+            domain = [
+                ('name', '=ilike', city_name),
+                ('country_id', '=', country_id)
+            ]
+            
+            if state_id:
+                domain.append(('state_id', '=', state_id))
+            
+            city = self.env['res.city'].search(domain, limit=1)
+            
+            if city:
+                return city.id
+            
+            # Create new city if not found
+            city_vals = {
+                'name': city_name,
+                'country_id': country_id,
             }
+            
+            if state_id:
+                city_vals['state_id'] = state_id
+            
+            if zipcode:
+                city_vals['zipcode'] = zipcode
+            
+            city = self.env['res.city'].create(city_vals)
+            return city.id
+            
         except Exception as e:
-            _logger.error("Error in simple test: %s", str(e))
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            _logger.error("Error finding/creating city '%s': %s", city_name, str(e))
+            return False
 
     @api.model
     def get_google_places_config(self, *args):
@@ -609,12 +623,10 @@ class ResPartner(models.Model):
             company_id = self.env.company.id
             
             # Get API key for current company
-            api_key_key = f'google.places.api.key.company_{company_id}'
-            api_key = self.env['ir.config_parameter'].sudo().get_param(api_key_key, '')
+            api_key = self.env['ir.config_parameter'].sudo().get_param('google_places_address.api_key', '')
             
             # Get country restriction setting for this company
-            country_key = f'google.places.country.company_{company_id}'
-            country_code = self.env['ir.config_parameter'].sudo().get_param(country_key, '')
+            country_code = self.env['ir.config_parameter'].sudo().get_param('google_places_address.country_restriction', '')
             
             return {
                 'enabled': True,
@@ -693,7 +705,17 @@ class ResPartner(models.Model):
                 elif 'route' in types:
                     route = long_name
                 elif 'locality' in types:
+                    # Primary city name
                     result['city'] = long_name
+                    result['_city_name'] = long_name  # Store for city_id lookup later
+                elif 'sublocality_level_1' in types:
+                    # For places like Brooklyn, use sublocality as city if locality not found
+                    if 'city' not in result:
+                        result['city'] = long_name
+                        result['_city_name'] = long_name  # Store for city_id lookup later
+                    else:
+                        # Add to sublocality parts for street2
+                        sublocality_parts.append(long_name)
                 elif 'administrative_area_level_1' in types:
                     # Find matching state/province using the country from address components
                     # Extract country code from the address components for state lookup
@@ -704,10 +726,13 @@ class ResPartner(models.Model):
                             break
                     
                     if country_code and long_name:
-                        state = self._find_state_id(long_name, country_code)
-                        if state:
-                            result['state_id'] = state.id
-                            result['state_name'] = state.name  # For frontend display
+                        state_id = self._find_state_id(long_name, country_code)
+                        if state_id:
+                            result['state_id'] = state_id
+                            # Get state name for frontend display
+                            state_record = self.env['res.country.state'].browse(state_id)
+                            if state_record.exists():
+                                result['state_name'] = state_record.name
                 elif 'country' in types:
                     # Find matching country
                     country = self._find_country_by_name_or_code(long_name, short_name)
@@ -737,11 +762,21 @@ class ResPartner(models.Model):
             if street_parts:
                 result['street'] = ' '.join(street_parts)
             
-            # Log successful processing
-            _logger.info(
-                "Successfully processed Google Places data for place_id: %s", 
-                result.get('google_places_place_id', 'unknown')
-            )
+            # If we have a city name and country, try to find/create city_id (for base_address_extended)
+            city_name = result.get('_city_name')
+            if city_name and result.get('country_id'):
+                city_id = self._find_or_create_city_id(
+                    city_name=city_name,
+                    state_id=result.get('state_id'),
+                    country_id=result.get('country_id'),
+                    zipcode=result.get('zip')
+                )
+                if city_id:
+                    result['city_id'] = city_id
+                    result['city_name'] = city_name  # For frontend display
+            
+            # Clean up internal keys
+            result.pop('_city_name', None)
             
             return result
             

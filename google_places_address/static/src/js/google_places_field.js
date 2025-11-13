@@ -3,16 +3,20 @@
 import { Component, useState, onMounted, useRef, onWillUnmount } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { standardFieldProps } from "@web/views/fields/standard_field_props";
 
 /**
  * Google Places Field Widget
  * Provides address autocomplete functionality with multi-company support
  */
 export class GooglePlacesField extends Component {
+    static template = "google_places_address.GooglePlacesField";
+    static props = {
+        ...standardFieldProps,
+        placeholder: { type: String, optional: true },
+    };
+    
     setup() {
-        this.rpc = useService("rpc");
-        this.notification = useService("notification");
-        this.user = useService("user");
         this.inputRef = useRef("googlePlacesInput");
         
         this.state = useState({
@@ -20,15 +24,23 @@ export class GooglePlacesField extends Component {
             autocomplete: null,
             isAuthorized: false,
             companyConfig: null,
-            isLoading: true,
-            error: null
+            isLoading: false,
+            error: null,
+            initialized: false
         });
         
         // Track if component is mounted to avoid state updates after unmount
         this.isMounted = true;
         
+        // Don't get services in setup - they may not be available yet
+        // We'll get them lazily when needed (on user interaction)
+        
         onMounted(() => {
-            this.initializeGooglePlaces();
+            // Just mark as initialized - services will be accessed on first interaction
+            if (this.isMounted) {
+                this.state.initialized = true;
+                this.state.isLoading = false;
+            }
         });
         
         onWillUnmount(() => {
@@ -37,20 +49,74 @@ export class GooglePlacesField extends Component {
     }
     
     /**
+     * Get ORM service for making RPC calls through the record's model
+     */
+    getOrm() {
+        if (this.props.record && this.props.record.model && this.props.record.model.orm) {
+            return this.props.record.model.orm;
+        }
+        throw new Error('ORM service not available');
+    }
+    
+    /**
+     * Make RPC call using the proper Odoo 18 pattern for field widgets
+     */
+    async rpcCall(route, params) {
+        const orm = this.getOrm();
+        return orm.call(params.model, params.method, params.args || [], params.kwargs || {});
+    }
+    
+    /**
+     * Get notification service lazily from environment
+     */
+    getNotificationService() {
+        if (this.env && this.env.services && this.env.services.notification) {
+            return this.env.services.notification;
+        }
+        // Return a no-op if not available
+        return {
+            add: () => {}
+        };
+    }
+    
+    /**
+     * Ensure services are available and initialize if not done yet
+     */
+    async ensureInitialized() {
+        if (this.state.isAuthorized || this.state.error) {
+            return; // Already initialized
+        }
+        
+        if (this.state.isLoading) {
+            return; // Already initializing
+        }
+        
+        await this.initializeGooglePlaces();
+    }
+    
+    /**
      * Initialize Google Places functionality with company validation
      */
     async initializeGooglePlaces() {
         try {
+            this.state.isLoading = true;
             await this.checkCompanyAccess();
             
             if (this.state.isAuthorized && this.state.companyConfig?.enabled) {
                 await this.loadGoogleMapsAPI();
+            }
+            
+            // Mark as initialized even if not authorized (field will be disabled)
+            if (this.isMounted) {
+                this.state.initialized = true;
+                this.state.isLoading = false;
             }
         } catch (error) {
             console.error('Error initializing Google Places:', error);
             if (this.isMounted) {
                 this.state.error = error.message || 'Failed to initialize Google Places';
                 this.state.isLoading = false;
+                this.state.initialized = true;
             }
         }
     }
@@ -60,8 +126,8 @@ export class GooglePlacesField extends Component {
      */
     async checkCompanyAccess() {
         try {
-            // Get company configuration and permissions
-            const config = await this.rpc('/web/dataset/call_kw', {
+            // Get company configuration and permissions using ORM
+            const config = await this.rpcCall('/web/dataset/call_kw', {
                 model: 'res.partner',
                 method: 'get_google_places_config',
                 args: [],
@@ -74,7 +140,6 @@ export class GooglePlacesField extends Component {
             
             // Check for errors in configuration
             if (config.error) {
-                console.warn('Google Places configuration error:', config.error);
                 this.state.isAuthorized = false;
                 this.state.error = config.error;
                 this.state.isLoading = false;
@@ -83,28 +148,28 @@ export class GooglePlacesField extends Component {
             
             // Validate company configuration
             if (!config.enabled) {
-                console.log('Google Places not enabled for current company');
                 this.state.isAuthorized = false;
                 this.state.isLoading = false;
+                // Show helpful message from backend if available
+                if (config.message) {
+                    this.state.error = config.message;
+                }
                 return;
             }
             
             if (!config.api_key) {
-                console.warn('Google Places API key not configured');
                 this.state.isAuthorized = false;
-                this.state.error = 'API key not configured';
+                this.state.error = 'Google Places API key not configured. Please configure in Settings.';
                 this.state.isLoading = false;
                 return;
             }
             
             this.state.isAuthorized = true;
-            console.log('Google Places authorization successful');
             
         } catch (error) {
-            console.error('Error checking company access:', error);
             if (this.isMounted) {
                 this.state.isAuthorized = false;
-                this.state.error = 'Access validation failed';
+                this.state.error = error.data?.message || error.message || 'Failed to load Google Places configuration';
                 this.state.isLoading = false;
             }
         }
@@ -191,9 +256,6 @@ export class GooglePlacesField extends Component {
                 autocompleteOptions.componentRestrictions = {
                     country: countryRestriction  // Use configured country restriction
                 };
-                console.log('Google Places Autocomplete with country restriction:', countryRestriction);
-            } else {
-                console.log('Google Places Autocomplete without country restriction (worldwide)');
             }
             
             const autocomplete = new google.maps.places.Autocomplete(input, autocompleteOptions);
@@ -205,9 +267,6 @@ export class GooglePlacesField extends Component {
                 // Only process if we have a valid place with geometry
                 if (place && place.geometry) {
                     this.handlePlaceChange(place);
-                } else {
-                    // User typed something but didn't select from dropdown
-                    console.log('Place entered without selection from dropdown');
                 }
             });
             
@@ -277,8 +336,6 @@ export class GooglePlacesField extends Component {
                 this.state.autocomplete = autocomplete;
                 this.state.isLoaded = true;
                 this.state.isLoading = false;
-                
-                console.log('Google Places autocomplete initialized successfully');
             }
             
         } catch (error) {
@@ -310,30 +367,49 @@ export class GooglePlacesField extends Component {
         }
         
         try {
-            console.log('Processing selected place:', place.formatted_address);
-            console.log('Place components:', place.address_components);
+            // Get notification service
+            const notification = this.getNotificationService();
             
             // Show processing notification
-            this.notification.add(
+            notification.add(
                 'Processing address...', 
                 { type: 'info' }
             );
             
+            // Extract only serializable data from the place object
+            // The Google Maps API place object contains functions and circular refs that can't be JSON serialized
+            const placeData = {
+                place_id: place.place_id,
+                formatted_address: place.formatted_address,
+                address_components: place.address_components || [],
+                geometry: place.geometry ? {
+                    location: {
+                        lat: typeof place.geometry.location.lat === 'function' 
+                            ? place.geometry.location.lat() 
+                            : place.geometry.location.lat,
+                        lng: typeof place.geometry.location.lng === 'function' 
+                            ? place.geometry.location.lng() 
+                            : place.geometry.location.lng
+                    }
+                } : null
+            };
+            
+            
             // Process place data through backend with company validation
-            const addressData = await this.rpc('/web/dataset/call_kw', {
+            const addressData = await this.rpcCall('/web/dataset/call_kw', {
                 model: 'res.partner',
                 method: 'process_google_place_data',
-                args: [place],
+                args: [placeData],
                 kwargs: {}
             });
             
             if (!this.isMounted) return;
             
             // Update form fields with processed data
-            this.updateFormFields(addressData);
+            await this.updateFormFields(addressData);
             
             // Show success notification
-            this.notification.add(
+            notification.add(
                 `✓ Address populated: ${place.formatted_address}`, 
                 { type: 'success' }
             );
@@ -348,26 +424,28 @@ export class GooglePlacesField extends Component {
             
         } catch (error) {
             console.error('Error processing place data:', error);
+            console.error('Error details:', error.data || error.message || error);
             
             if (!this.isMounted) return;
             
-            // Handle different types of errors
-            if (error.message && error.message.includes('not available for this company')) {
-                this.notification.add(
-                    'Google Places API not available for your company', 
-                    { type: 'warning' }
-                );
-            } else if (error.message && error.message.includes('permission')) {
-                this.notification.add(
-                    'You do not have permission to use Google Places API', 
-                    { type: 'warning' }
-                );
-            } else {
-                this.notification.add(
-                    'Error processing address data. Please try again or enter manually.', 
-                    { type: 'danger' }
-                );
+            const notification = this.getNotificationService();
+            
+            // Get detailed error message
+            let errorMessage = 'Error processing address data. Please try again or enter manually.';
+            
+            if (error.data && error.data.message) {
+                errorMessage = error.data.message;
+            } else if (error.message) {
+                if (error.message.includes('not available for this company')) {
+                    errorMessage = 'Google Places API not available for your company';
+                } else if (error.message.includes('permission')) {
+                    errorMessage = 'You do not have permission to use Google Places API';
+                } else {
+                    errorMessage = error.message;
+                }
             }
+            
+            notification.add(errorMessage, { type: 'danger' });
             
             // Hide dropdown on error but keep input value for user to see
             this.hideDropdownCleanly();
@@ -377,133 +455,108 @@ export class GooglePlacesField extends Component {
     /**
      * Update form fields with processed address data
      */
-    updateFormFields(addressData) {
+    async updateFormFields(addressData) {
         if (!this.props.record || !addressData) {
             return;
         }
         
-        const updates = {};
         
+        // We'll prepare scalar updates and handle Many2one fields specially.
+        // Many2one fields in the web client should be passed as [id, display_name]
+        // and the country must be set before state so state options reload correctly.
+        const scalarUpdates = {};
+        const relationalUpdates = {}; // many2one fields as [id, name]
+
         // Map processed data to form fields
-        Object.keys(addressData).forEach(key => {
-            if (addressData[key] !== null && 
-                addressData[key] !== undefined && 
-                addressData[key] !== '' &&
-                this.props.record.fields[key]) {
-                updates[key] = addressData[key];
+        for (const [key, value] of Object.entries(addressData)) {
+            // Skip null, undefined, empty strings, and fields not in the model
+            if (value === null || value === undefined || value === '') {
+                continue;
             }
-        });
-        
-        if (Object.keys(updates).length > 0) {
-            console.log('Updating form fields:', updates);
-            this.props.record.update(updates);
-            
-            // Also directly update HTML form elements for immediate visual feedback
-            this.updateHTMLFields(addressData);
+
+            if (!this.props.record.fields[key]) {
+                continue;
+            }
+
+            // Skip *_name fields as they're just for display, not model fields
+            if (key.endsWith('_name')) {
+                continue;
+            }
+
+            const fieldType = this.props.record.fields[key].type;
+            if (fieldType === 'many2one') {
+                // Expect addressData to contain <field> and <field>_name
+                const nameKey = `${key.replace(/_id$/, '')}_name`;
+                const displayName = addressData[`${key.replace(/_id$/, '')}_name`] || addressData[`${key}_name`] || '';
+
+                if (typeof value === 'number' && value > 0) {
+                    relationalUpdates[key] = [value, displayName];
+                } else if (Array.isArray(value) && value.length >= 2) {
+                    relationalUpdates[key] = [value[0], value[1]];
+                }
+            } else {
+                // Regular field (Char, Float, etc.)
+                scalarUpdates[key] = value;
+            }
         }
-    }
-    
-    /**
-     * Directly update HTML form field elements by their IDs
-     * This ensures immediate visual feedback when Google Places populates fields
-     */
-    updateHTMLFields(addressData) {
-        try {
-            // Update street field (street_0)
-            if (addressData.street) {
-                this.updateFieldById('street_0', addressData.street);
-            }
-            
-            // Update street2 field (street2_0)
-            if (addressData.street2) {
-                this.updateFieldById('street2_0', addressData.street2);
-            }
-            
-            // Update city field (city_0)
-            if (addressData.city) {
-                this.updateFieldById('city_0', addressData.city);
-            }
-            
-            // Update zip field (zip_0)
-            if (addressData.zip) {
-                this.updateFieldById('zip_0', addressData.zip);
-            }
-            
-            // Update state field (state_id_0) - Many2one field
-            if (addressData.state_id) {
-                this.updateMany2oneField('state_id_0', addressData.state_id, addressData.state_name || '');
-            }
-            
-            // Update country field (country_id_0) - Many2one field
-            if (addressData.country_id) {
-                this.updateMany2oneField('country_id_0', addressData.country_id, addressData.country_name || '');
-            }
-            
-        } catch (error) {
-            console.warn('Error updating HTML fields directly:', error);
-        }
-    }
-    
-    /**
-     * Update a simple field by ID
-     */
-    updateFieldById(fieldId, value) {
-        const element = document.getElementById(fieldId);
-        if (element) {
-            element.value = value;
-            // Trigger change event to notify Odoo
-            element.dispatchEvent(new Event('change', { bubbles: true }));
-            console.log(`Updated ${fieldId} with value:`, value);
-        } else {
-            console.warn(`Field element ${fieldId} not found in DOM`);
-        }
-    }
-    
-    /**
-     * Update a Many2one field by ID (these are typically select elements or have hidden inputs)
-     */
-    updateMany2oneField(fieldId, recordId, displayName) {
-        // Try to find the Many2one field container
-        const fieldContainer = document.getElementById(fieldId);
-        if (!fieldContainer) {
-            console.warn(`Many2one field container ${fieldId} not found in DOM`);
+
+
+        // If nothing to do, bail out
+        if (Object.keys(scalarUpdates).length === 0 && Object.keys(relationalUpdates).length === 0) {
             return;
         }
-        
-        // Look for the input element within the container
-        const inputElement = fieldContainer.querySelector('input[type="text"], input[type="hidden"], select');
-        if (inputElement) {
-            if (inputElement.tagName.toLowerCase() === 'select') {
-                // Handle select dropdown
-                inputElement.value = recordId;
+
+        // We'll update scalar fields (and non-dependent relational fields) first together with country,
+        // then apply state update after country is set so the state's domain refreshes properly.
+        try {
+            // Note: We're NOT using direct DOM updates (updateHTMLFields) anymore because
+            // it can conflict with OWL's reactive rendering and cause duplicate fields.
+            // The props.record.update() calls below handle all field updates properly.
+
+            // If we have a country to set, we need to sequence updates to avoid field clearing
+            if (relationalUpdates.country_id) {
+                // Separate city, city_id, and zip from updates - they need to be set after country/state
+                // to avoid being cleared by domain changes
+                const { city, zip, ...scalarWithoutCityZip } = scalarUpdates;
+                const { city_id, state_id, country_id, ...otherRelational } = relationalUpdates;
+                
+                // First batch: scalar fields (without city/zip) + country
+                const firstBatch = { ...scalarWithoutCityZip, country_id };
+                await this.props.record.update(firstBatch);
+
+                // After country is set, if we also have state, set it now
+                if (state_id) {
+                    const stateBatch = { state_id };
+                    await this.props.record.update(stateBatch);
+                }
+                
+                // Now update city/city_id after country/state are set (prevents domain clearing)
+                // city_id takes precedence over plain city field
+                if (city_id) {
+                    await this.props.record.update({ city_id });
+                } else if (city) {
+                    await this.props.record.update({ city });
+                }
+                
+                // Now update zip after all location fields are set (prevents clearing)
+                if (zip) {
+                    await this.props.record.update({ zip });
+                }
+                
+                // If there are other relational fields besides country/state/city_id, set them now
+                if (Object.keys(otherRelational).length > 0) {
+                    await this.props.record.update(otherRelational);
+                }
             } else {
-                // Handle text input (typical for Many2one)
-                inputElement.value = displayName;
-                // Set data attribute for the ID
-                inputElement.setAttribute('data-id', recordId);
+                // No country present - apply all updates at once (relational fields as arrays)
+                const combined = { ...scalarUpdates, ...relationalUpdates };
+                await this.props.record.update(combined);
             }
-            
-            // Trigger change event
-            inputElement.dispatchEvent(new Event('change', { bubbles: true }));
-            console.log(`Updated Many2one ${fieldId} with ID: ${recordId}, Name: ${displayName}`);
-        } else {
-            console.warn(`Input element not found within Many2one field ${fieldId}`);
+
+        } catch (error) {
+            console.error('Error updating record:', error);
+            throw error;
         }
-    }
-    
-    /**
-     * Map country names to ISO codes for Google Places API
-     */
-    getCountryCode(countryName) {
-        const countryMapping = {
-            'South Africa': 'za',
-            'United States': 'us',
-            'United Kingdom': 'gb',
-            'Canada': 'ca',
-            'Australia': 'au'
-        };
-        
-        return countryMapping[countryName] || ''; // No default - use what's configured
     }
     
     /**
@@ -558,7 +611,7 @@ export class GooglePlacesField extends Component {
             });
             
         } catch (error) {
-            console.warn('Error hiding dropdown:', error);
+            // Silently handle dropdown hide errors
         }
     }
     
@@ -574,7 +627,7 @@ export class GooglePlacesField extends Component {
                 dropdown.classList.remove('hide-dropdown');
             });
         } catch (error) {
-            console.warn('Error showing dropdown:', error);
+            // Silently handle dropdown show errors
         }
     }
     
@@ -601,7 +654,7 @@ export class GooglePlacesField extends Component {
             }, 50);
             
         } catch (error) {
-            console.warn('Error clearing input and dropdown:', error);
+            // Silently handle clear errors
         }
     }
     
@@ -619,21 +672,19 @@ export class GooglePlacesField extends Component {
             try {
                 google.maps.event.clearInstanceListeners(this.state.autocomplete);
             } catch (error) {
-                console.warn('Error cleaning up autocomplete listeners:', error);
+                // Silently handle cleanup errors
             }
         }
     }
 }
 
-// Template name for this component
-GooglePlacesField.template = "google_places_address.GooglePlacesField";
-
-// Component props definition
-GooglePlacesField.props = {
-    record: Object,
-    name: { type: String, optional: true },
-    placeholder: { type: String, optional: true }
+// Register the field widget in the registry (Odoo 18 pattern)
+export const googlePlacesField = {
+    component: GooglePlacesField,
+    supportedTypes: ["char"],
+    extractProps: ({ attrs }) => ({
+        placeholder: attrs.placeholder,
+    }),
 };
 
-// Register the field widget in the registry
-registry.category("fields").add("google_places_autocomplete", GooglePlacesField);
+registry.category("fields").add("google_places_autocomplete", googlePlacesField);
