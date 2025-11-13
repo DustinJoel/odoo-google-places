@@ -68,7 +68,7 @@
         ],
     },
     'images': [
-        'static/description/google_places_banner.gif'
+        'static/description/google_places_banner.gif',
         'static/description/icon.png',
         'static/description/screenshot_1.png',
         'static/description/screenshot_2.png',

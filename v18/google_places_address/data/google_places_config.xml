@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<odoo>
-    <data noupdate="1">
-        
-        <!-- Google Places API default configuration -->
-        <!-- Configuration is done per-company through Settings > General Settings -->
-        
-    </data>
-</odoo>
