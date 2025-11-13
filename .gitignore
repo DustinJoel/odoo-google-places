@@ -32,3 +32,8 @@ htmlcov/
 # Translations
 *.mo
 *.pot
+
+# Local development folders
+v17/
+v18/
+Odoo 18 Branch/
